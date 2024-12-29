@@ -1,0 +1,211 @@
+name: MINI 精简版
+
+on:
+  workflow_dispatch:
+#  schedule:
+#    - cron: 0 19 * * *
+
+env:
+  REPO_URL: https://${{ secrets.GIT_USERNAME }}:${{ secrets.GIT_PASSWORD }}@git.kejizero.online/zhao/openwrt.git
+  REPO_BRANCH: openwrt-24.10
+  CONFIG_FILE: configs/MINI
+  DIY_SCRIPT: diy-script.sh
+  CLASH_KERNEL: amd64
+  CACHE_TOOLCHAIN: true
+  UPLOAD_BIN_DIR: false
+  FIRMWARE_RELEASE: true
+  FIRMWARE_TAG: x86_64
+  TZ: Asia/Shanghai
+  VERSION: MINI
+
+jobs:
+  Build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: 检查服务器性能
+      run: |
+        echo "警告⚠"
+        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
+        echo -e "已知CPU型号(降序): 7763，8370C，8272CL，8171M，E5-2673\n"
+        echo "--------------------------CPU信息--------------------------"
+        echo "CPU物理数量: $(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
+        echo "CPU核心数量: $(nproc)"
+        echo -e "CPU型号信息:$(cat /proc/cpuinfo | grep -m1 name | awk -F: '{print $2}')\n"
+        echo "--------------------------内存信息--------------------------"
+        echo "已安装内存详细信息:"
+        echo -e "$(sudo lshw -short -C memory | grep GiB)\n"
+        echo "--------------------------硬盘信息--------------------------"
+        echo "硬盘数量: $(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+
+    - name: 初始化环境
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        docker rmi $(docker images -q)
+        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
+        sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+        sudo -E apt-get -y update
+        sudo -E apt-get -y install $(curl -fsSL https://is.gd/6HOxlp)
+        sudo -E apt-get -y autoremove --purge
+        sudo -E apt-get -y clean
+        sudo -E apt-get -y install clang
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: 合并磁盘
+      uses: easimon/maximize-build-space@master
+      with:
+        swap-size-mb: 1024
+        temp-reserve-mb: 100
+        root-reserve-mb: 1024
+
+    - name: 查看配置
+      uses: actions/checkout@main
+
+    - name: 克隆源代码
+      run: |
+        df -hT $GITHUB_WORKSPACE
+        git clone $REPO_URL -b $REPO_BRANCH openwrt
+        cd openwrt
+        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
+        COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")
+        echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >> $GITHUB_ENV
+        COMMIT_DATE=$(git show -s --date=format:'%Y%m%d' --format="时间: %ci")
+        echo "COMMIT_DATE=$COMMIT_DATE" >> $GITHUB_ENV
+        COMMIT_MESSAGE=$(git show -s --date=short --format="内容: %s")
+        echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
+        COMMIT_HASH=$(git show -s --date=short --format="hash: %H")
+        echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
+
+
+    - name: 生成变量
+      run: |
+        cp $CONFIG_FILE $OPENWRT_PATH/.config
+        cd $OPENWRT_PATH
+        make defconfig > /dev/null 2>&1
+        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
+        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
+        DEVICE_TARGET=$(cat .config | grep CONFIG_TARGET_BOARD | awk -F '"' '{print $2}')
+        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
+        DEVICE_SUBTARGET=$(cat .config | grep CONFIG_TARGET_SUBTARGET | awk -F '"' '{print $2}')
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+
+    - name: 缓存工具链
+      if: env.CACHE_TOOLCHAIN == 'true'
+      uses: HiGarfield/cachewrtbuild@main
+      with:
+        ccache: false
+        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
+        prefix: ${{ env.OPENWRT_PATH }}
+
+    - name: 安装Feeds
+      run: |
+        cd $OPENWRT_PATH
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+
+    - name: 加载自定义配置
+      run: |
+        [ -e files ] && mv files $OPENWRT_PATH/files
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
+        chmod +x $GITHUB_WORKSPACE/scripts/*.sh
+        chmod +x $DIY_SCRIPT
+        cd $OPENWRT_PATH
+        GIT_USERNAME=${{ secrets.GIT_USERNAME }} \
+        GIT_PASSWORD=${{ secrets.GIT_PASSWORD }} \
+        $GITHUB_WORKSPACE/$DIY_SCRIPT
+        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
+        # $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
+        $GITHUB_WORKSPACE/scripts/Change-source-address.sh
+
+    - name: 下载DL包
+      run: |
+        cd $OPENWRT_PATH
+        make defconfig
+        make download -j8
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: 编译固件
+      id: compile
+      run: |
+        cd $OPENWRT_PATH
+        mkdir -p files/etc/uci-defaults
+        cp $GITHUB_WORKSPACE/scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        echo "DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +"%Y%m%d")" >> $GITHUB_ENV
+
+    - name: 查看使用情况
+      if: (!cancelled())
+      run: df -hT
+
+    - name: 重命名文件
+      if: steps.compile.outputs.status == 'success' && !cancelled()
+      run: |
+        find $OPENWRT_PATH/bin/targets -type f \( -name "openwrt*.gz" \) -exec sh -c 'mv "$1" "$(dirname "$1")/${{ env.DATE }}-${{ env.VERSION }}-$(basename "$1")"' sh {} \; 2>/dev/null || true
+
+    - name: 整理文件
+      id: organize
+      if: steps.compile.outputs.status == 'success' && !cancelled()
+      run: |
+        mkdir -p firmware
+        mkdir -p firmware/package/
+        find $OPENWRT_PATH/bin/targets/ -type f \( -name "*squashfs-combined*.gz" -o -name "*sysupgrade*" \) -exec mv {} ./firmware/ \; 2>/dev/null || true
+        find $OPENWRT_PATH/bin/packages/ -type f \( -name "*.ipk" \) -exec mv {} ./firmware/package/ \; 2>/dev/null || true
+        mv $OPENWRT_PATH/.config ./firmware/${{ env.FIRMWARE_TAG }}_${{ env.VERSION }}.config 2>/dev/null || true
+        mv $OPENWRT_PATH/build_dir/target-*/linux-*/linux-*/.config ./firmware/${{ env.FIRMWARE_TAG }}_${{ env.VERSION }}_kernel.config 2>/dev/null || true
+        [ -e release ] && cp release ./firmware/release.txt
+        cd firmware
+        echo -n "${{ env.DATE }}" > version.txt
+        md5=$(md5sum *squashfs-combined.img.gz | awk '{print $1}') 2>/dev/null || true
+        md5_efi=$(md5sum *squashfs-combined-efi.img.gz | awk '{print $1}') 2>/dev/null || true
+        echo "md5=$md5" > md5sum.txt
+        echo "md5_efi=$md5_efi" >> md5sum.txt
+        rm -rf sha256sums
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: 上传artifact固件目录
+      uses: actions/upload-artifact@main
+      if: steps.organize.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true' && !cancelled()
+      with:
+        name: ${{ env.DATE }}_${{ env.FIRMWARE_TAG }}_${{ env.VERSION }}
+        path: ./firmware/**
+
+    - name: 生成releases发布标签
+      id: tag
+      if: steps.organize.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true' && !cancelled()
+      run: |
+        echo "release_tag=${{ env.DATE }}" >> $GITHUB_OUTPUT
+        [ -e release ] && cp release ./release.txt
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: 上传releases固件发布
+      uses: softprops/action-gh-release@v2
+      if: steps.organize.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.TOKEN_OPPEN321 }}
+      with:
+        files: ./firmware/*.*
+        name: ${{ env.DATE }}_${{ env.FIRMWARE_TAG }}_${{ env.VERSION }}
+        tag_name: ${{ env.FIRMWARE_TAG }}_${{ env.VERSION }}
+        body_path: release.txt
+
+    - name: 删除workflow工作流
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        token: ${{ secrets.TOKEN_OPPEN321 }}
+        repository: ${{ github.repository }}
+        retain_days: 1
+        keep_minimum_runs: 1
+
+    - name: 删除releases旧版本
+      uses: dev-drprasad/delete-older-releases@master
+      if: env.FIRMWARE_RELEASE == 'true' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.TOKEN_OPPEN321 }}
+      with:
+        keep_latest: 5
+        delete_tags: true
