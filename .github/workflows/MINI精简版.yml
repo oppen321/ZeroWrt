@@ -49,8 +49,10 @@ jobs:
         sudo -E apt-get -y install $(curl -fsSL https://is.gd/6HOxlp)
         sudo -E apt-get -y autoremove --purge
         sudo -E apt-get -y clean
-        sudo -E apt-get -y install clang
         sudo timedatectl set-timezone "$TZ"
+
+    - name: Install LLVM
+      uses: oppen321/actions@install-llvm        
 
     - name: 合并磁盘
       uses: easimon/maximize-build-space@master
