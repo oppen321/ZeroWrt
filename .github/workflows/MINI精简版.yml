@@ -9,7 +9,7 @@ env:
   REPO_URL: https://git.openwrt.org/openwrt/openwrt.git
   REPO_BRANCH: v24.10.0-rc4
   CONFIG_FILE: configs/MINI
-  DIY_SCRIPT: diy-script.sh
+  DIY_SCRIPT: DIY/MINI
   CLASH_KERNEL: amd64
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
