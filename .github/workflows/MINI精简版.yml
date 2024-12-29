@@ -6,8 +6,8 @@ on:
 #    - cron: 0 19 * * *
 
 env:
-  REPO_URL: https://${{ secrets.GIT_USERNAME }}:${{ secrets.GIT_PASSWORD }}@git.kejizero.online/zhao/openwrt.git
-  REPO_BRANCH: openwrt-24.10
+  REPO_URL: https://git.openwrt.org/openwrt/openwrt.git
+  REPO_BRANCH: v24.10.0-rc4
   CONFIG_FILE: configs/MINI
   DIY_SCRIPT: diy-script.sh
   CLASH_KERNEL: amd64
